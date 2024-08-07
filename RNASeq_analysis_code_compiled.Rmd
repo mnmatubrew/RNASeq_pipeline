@@ -1,0 +1,883 @@
+---
+title: "RNA Seq Pipeline (Maile)"
+output: html_notebook
+---
+
+```{r Libraries I use}
+library(microseq)
+library(DESeq2)
+library(tximport)
+library(edgeR)
+library(GenomicFeatures)
+library(ggplot2)
+library(AnnotationDbi)
+library(Rsubread)
+library(edgeR)
+library(biomaRt)
+library(dplyr)
+library(tidyr)
+library(rtracklayer)
+library(tidyverse)
+library(clusterProfiler)
+library(EnhancedVolcano)
+library(edgeR)
+library(RUVSeq)
+library(pheatmap)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(circlize)
+library(ggplotify)
+library(stringr)
+library(scales)
+```
+
+Bulk Data Alignment workflow: *All done in Terminal or Linux* - You will need to install homebrew (look online/ask chatGPT for the specifics...) and also Java for Trimmomatic
+
+1. Download _1.fastq and _2.fastq of your sample from https://www.ebi.ac.uk/ena/browser/view (or however you're getting it)
+
+2. trim reads with trimmomatic:
+ a.download Trimmomatic and Java
+
+ b. Trimmomatic code:
+```{bash Trimmomatic}
+  java -jar trimmomatic-0.39.jar PE \
+     -threads 4 \
+    sample.1.fastq.gz sample.2.fastq.gz \
+     output_forward(1)_paired.fastq.gz output_forward_unpaired.fastq.gz \
+     output_reverse(2)_paired.fastq.gz output_reverse_unpaired.fastq.gz \
+     ILLUMINACLIP:TruSeq3-PE.fa:2:30:10 \
+     LEADING:3 \
+     TRAILING:3 \
+     SLIDINGWINDOW:4:15 \
+     MINLEN:36
+```
+
+3. run FASTQC analysis on your trimmed sample - checks for quality
+ a. download FastQC
+
+ b. FastQC code:
+```{bash FastQC}
+fastqc path/to/*sample*_comb_trimmed.fastq 
+
+#batch processing
+
+for file in path/to/trimmed/samples*.fastq; do
+    fastqc "$file"
+done
+```
+
+4. STAR align (takes awhile)
+
+a. create genome index using your downloaded FASTA and gtf files
+> downloading Fasta for Stockdale:
+https://ftp.ensembl.org/pub/release-84/ -> https://ftp.ensembl.org/pub/release-84/fasta/astyanax_mexicanus/dna/ -> download "Astyanax_mexicanus.AstMex102.dna.toplevel.fa.gz"
+
+> downloading GTF for stockdale:
+https://ftp.ensembl.org/pub/release-84/gtf/astyanax_mexicanus/ -> download "Astyanax_mexicanus.AstMex102.84.gtf.gz"
+
+> unzip both files before use (it's easier that way), so from .fa.gz to .fa
+
+Basic parameters for generating Genome index:
+
+STAR --runThreadN 4 (or if you are using analysis station, 60-64) --runMode genomeGenerate --genomeDir 'path/to/genome_index' --genomeFastaFiles 'path/to/fasta/ast.mex.fa' --sjdbGTFfile 'path/to/gtf/file/ast.mex.gtf' --sjdbOverhang 100
+
+```{bash STAR Genome Index Generate}
+STAR --runThreadN 64 --runMode genomeGenerate --genomeDir 'path/to/genome_index' --genomeFastaFiles 'path/to/fasta/ast.mex.fa' --sjdbGTFfile 'path/to/gtf/file/ast.mex.gtf' --sjdbOverhang 100
+```
+
+b. align trimmed fastq samples
+
+Basic parameters for alignment:
+STAR --runThreadN NumberOfThreads --genomeDir /path/to/genomeDir --readFilesIn /path/to/read1 [/path/to/read2]
+
+Stockdale parameters:
+```{bash STAR Alignment}
+STAR --runThreadN 64 --genomeDir 'path/to/genome_index' --alignIntronMax 100000 --readFilesIn 'path/to/trimmed_fastq/*sample*_1(forward)_paired_trimmed.fastq' 'path/to/trimmed_fastq/*sample*_2(reverse)_paired_trimmed.fastq' --outSAMtype BAM SortedByCoordinate --outFileNamePrefix *sample*.
+
+```
+
+5. Read your sorted.bam into R 
+
+```{r reading in sorted.bam files}
+gtf_file <- "path/to/.gtf"
+
+bam_file <- "path/to/sample_Aligned.sortedByCoord.out.bam"
+
+Sample <- featureCounts(files = bam_file,
+                            annot.ext = gtf_file,
+                            isGTFAnnotationFile = TRUE,
+                            GTF.featureType = "exon",
+                           GTF.attrType = "gene_id",
+                           useMetaFeatures = TRUE,
+                          nthreads = 4)
+
+write.csv(Sample$counts, file = "Sample_gene_counts.csv", row.names=TRUE)
+Sample_gene_counts <- read.csv("Sample_gene_counts.csv", row.names = 1)
+```
+
+```{r annotating (can be used to annotate any data frame with gene ids)}
+#import your gtf or any other kind of annotation file
+annotations <- rtracklayer::import('path/to/annotation/file')
+annotations_df = as.data.frame(annotations)
+
+#to merge with your data
+sample_annotated <- merge(sample, annotations_df, by = "gene_id")
+```
+
+Once you have read in all of your samples and wrote them as .csv files, I recommend combining them in google sheets, so make one sheet with all SF_7dpa samples etc. and then re-read them into R by downloading the sheet as a .csv and reading them in with code like below
+```{r reading in .csv files}
+CF_7dpa_samples <- read.csv("~/Downloads/CF_7dpa_samples.csv", row.names = 1) #replace file path with whatever yours is
+SF_7dpa_samples <- read.csv("~/Downloads/SF_7dpa_samples.csv", row.names = 1)
+
+CF_sham_samples <- read.csv("~/Downloads/CF_Sham_samples.csv", row.names = 1)
+SF_sham_samples <- read.csv("~/Downloads/SF_Sham_samples.csv", row.names = 1)
+
+CF_14dpa_samples <- read.csv("~/Downloads/CF_14dpa_samples.csv", row.names = 1)
+SF_14dpa_samples <- read.csv("~/Downloads/SF_14dpa_samples.csv", row.names = 1)
+
+CF_3dpa_samples <- read.csv("~/Downloads/CF_3dpa.csv", row.names = 1)
+SF_3dpa_samples <- read.csv("~/Downloads/SF_3dpa.csv", row.names = 1)
+```
+
+
+```{r}
+#To get a combined data frame of all your raw countdata, which is necessary for downstream analysis/normalization/plotting
+combined_df <- cbind(CF_sham_samples[order(row.names(CF_sham_samples)),],  CF_3dpa_samples[order(row.names(CF_3dpa_samples)),], CF_7dpa_samples[order(row.names(CF_7dpa_samples)),], CF_14dpa_samples[order(row.names(CF_14dpa_samples)),], SF_sham_samples[order(row.names(SF_sham_samples)),], SF_3dpa_samples[order(row.names(SF_3dpa_samples)),], SF_7dpa_samples[order(row.names(SF_7dpa_samples)),], SF_14dpa_samples[order(row.names(SF_14dpa_samples)),]) #or pick which ones you want, maybe only Sham and 7dpas or 7dpas and 14dpas, etc.
+countdata <- as.matrix(combined_df)
+
+
+condition <- factor(c(rep("CF_Sham", 3), rep("CF_3dpa", 3), rep("CF_7dpa", 3), rep("CF_14dpa", 3), rep("SF_Sham", 3), rep("SF_3dpa", 3), rep("SF_7dpa", 3), rep("SF_14dpa", 3))) #match to the conditions you chose, and the number refers to the number of samples per condition (So for Stockdale it was 3 each)
+
+colData <- as.data.frame(condition)
+colData$condition <- factor(colData$condition, levels = c("CF_Sham", "CF_3dpa", "CF_7dpa", "CF_14dpa", "SF_Sham", "SF_3dpa", "SF_7dpa", "SF_14dpa"))
+
+rownames(colData) <- colnames(combined_df)
+colData
+```
+
+```{r DESeq2 code}
+dds <- DESeqDataSetFromMatrix(countData = countdata,
+							  colData = colData,
+							  design = ~condition)
+
+#filter lowcount genes
+dds <- dds[rowSums(counts(dds)) > 1, ]
+
+dds <- DESeq(dds)
+
+# Get normalized counts
+norm_counts <- counts(dds, normalized = TRUE)
+
+#If you want to compare two conditions directly
+res_Condition1.Condition2 <- results(dds, contrast = c("condition", "condition_2", "Condition_1"))
+```
+
+```{r EdgeR normalization (if you want to use something different from DESeq2)}
+group <- factor(c(rep("CF_Sham", 3), rep("CF_3dpa", 3), rep("CF_7dpa", 3), rep("CF_14dpa", 3), rep("SF_Sham", 3), rep("SF_3dpa", 3), rep("SF_7dpa", 3), rep("SF_14dpa", 3)))
+dge <- DGEList(counts = countdata, group = group)
+
+dge <- calcNormFactors(dge, method = "upperquartile")
+
+#Differential expression analysis (not perfected...)
+# Load Required Libraries
+library(edgeR)
+library(DESeq2)
+library(sva)
+
+# Load Aligned RNA-Seq Data
+count_data <- countdata
+
+# Verify the Number of Samples
+print(dim(count_data))
+
+# Define conditions
+conditions <- c(
+  "CF_Sham", "CF_Sham", "CF_Sham",
+  "CF_3dpa", "CF_3dpa", "CF_3dpa",
+  "CF_7dpa", "CF_7dpa", "CF_7dpa",
+  "CF_14dpa", "CF_14dpa", "CF_14dpa",
+"SF_Sham", "SF_Sham", "SF_Sham",
+ "SF_3dpa", "SF_3dpa", "SF_3dpa",
+"SF_7dpa", "SF_7dpa", "SF_7dpa", "SF_14dpa", "SF_14dpa", "SF_14dpa"
+)
+
+# Create factor with 8 levels
+group <- factor(conditions, levels = c("CF_Sham", "CF_3dpa", "CF_7dpa", "CF_14dpa", "SF_Sham", "SF_3dpa", "SF_7dpa", "SF_14dpa"))
+
+# Check factor levels
+print(levels(group))
+
+# Design matrix with intercept
+mod <- model.matrix(~ group)
+print(dim(mod))  # Should be (24 x 9)
+print(colnames(mod))  # Should include "groupCF_3dpa", "groupCF_7dpa", etc.
+
+# Check the first few rows
+print(head(mod))
+   # Check the distribution of samples across groups
+
+# Create DGEList Object
+dge <- DGEList(counts = count_data, group = group)
+
+# Upper Quartile Normalization
+dge <- calcNormFactors(dge, method = "upperquartile")
+
+# Log-transform counts for SVA
+log_counts <- cpm(dge, log = TRUE)
+
+
+mod <- model.matrix(~ group)
+print(head(mod))
+print(dim(mod))  # Should be (24 x 9), with intercept and 8 conditions
+
+# Design matrix for the null model
+mod0 <- model.matrix(~ 1)
+print(dim(mod0))  
+# Ensure no missing values
+if (any(is.na(log_counts))) {
+  stop("There are missing values in the log-transformed counts.")
+}
+
+
+svaobj <- sva(log_counts, mod, mod0)
+
+# Add surrogate variables to the design matrix
+design_sva <- cbind(mod, svaobj$sv)
+
+# Estimate dispersion
+dge <- estimateDisp(dge, design_sva)
+
+# Fit the model
+fit <- glmFit(dge, design_sva)
+
+# Conduct the likelihood ratio test
+lrt <- glmLRT(fit)
+
+# Get the top differentially expressed genes
+top_genes <- topTags(lrt)
+print(top_genes)
+
+top_genes_df <- as.data.frame(top_genes)
+top_genes_df <- cbind(top_genes_df, rownames(top_genes_df))
+top_genes_df <- top_genes_df %>% rename(gene_id = `rownames(top_genes_df)`)
+top_genes_df <- merge(top_genes_df, annotations_df, by = "gene_id")
+
+```
+
+```{r PCA Plot}
+condition <- factor(c(rep("CF_Sham", 3), rep("CF_3dpa", 3), rep("CF_7dpa", 3), rep("CF_14dpa", 3), rep("SF_Sham", 3), rep("SF_3dpa", 3), rep("SF_7dpa", 3), rep("SF_14dpa", 3))) #put your conditions + number of replicates here
+dds <- DESeqDataSetFromMatrix(countData = countdata,
+							  colData = colData,
+							  design = ~condition)
+
+
+dds <- DESeq(dds)
+
+vsd <- vst(dds, blind = TRUE)
+
+plot_PCA = function (vsd.obj) {
+  pcaData <- plotPCA(vsd.obj,  intgroup = c("condition"), returnData = T)
+  percentVar <- round(100 * attr(pcaData, "percentVar"))
+  ggplot(pcaData, aes(PC1, PC2, color=condition)) +
+    geom_point(size=3) +
+    labs(x = paste0("PC1: ",percentVar[1],"% variance"),
+         y = paste0("PC2: ",percentVar[2],"% variance"),
+         title = "PCA Plot colored by condition") +
+    ggrepel::geom_text_repel(aes(label = name), color = "black")
+}
+
+plot_PCA(vsd)
+```
+
+
+```{r T-test}
+T_test_timepoints <- function(time_point_1, time_point_2, genes_of_interest) {
+  # Construct column names based on the time_point argument
+  control_columns <- paste0(time_point_1, "_", 1:3)
+  treatment_columns <- paste0(time_point_2, "_", 1:3)
+  all_columns <- c(control_columns, treatment_columns)
+  
+  # Convert countdata to a data frame and select relevant columns
+  count_data <- as.data.frame(countdata)
+  count_data <- count_data %>% select(all_of(all_columns))
+  
+  # Create sample info data frame
+  sample_info <- data.frame(
+    Sample = colnames(count_data),
+    condition = rep(c(paste0(time_point_1), paste0(time_point_2)), each = 3)
+  )
+  
+  # Ensure count_data columns match sample_info columns
+  count_data <- count_data[, sample_info$Sample]
+  
+  # Create DESeqDataSet
+  dds <- DESeqDataSetFromMatrix(countData = count_data,
+                                colData = sample_info,
+                                design = ~ condition)
+  
+  # Perform variance stabilization
+  vst_data <- vst(dds, blind = TRUE)
+  vst_mat <- assay(vst_data)
+  
+  # Filter out genes with low variance
+  variance_threshold <- 1e-6
+  gene_variances <- apply(vst_mat, 1, var)
+  filtered_vst_mat <- vst_mat[gene_variances > variance_threshold, ]
+  
+  filtered_vst_mat <- data.frame(Gene = rownames(filtered_vst_mat), filtered_vst_mat, row.names = NULL)
+  
+  # Merge with annotations and filter genes of interest
+  merged_df <- merge(filtered_vst_mat, annotations_df, by.x = "Gene", by.y = "gene_id")
+  merged_df <- merged_df %>% filter(gene_name %in% genes_of_interest)
+  
+  # Optional: Set Gene column as row names
+  rownames(merged_df) <- merged_df$gene_name
+  merged_df <- merged_df[, -which(names(merged_df) == "gene_name")]
+  merged_df <- merged_df[, -which(names(merged_df) == "Gene")]
+  
+  # Prepare a data frame to store t-test results
+  t_test_results <- data.frame(Gene = rownames(merged_df), p_value = NA, log2FoldChange = NA)
+  
+  # Loop through each gene and perform t-test
+  for (i in 1:nrow(merged_df)) {
+    gene_expression <- as.numeric(merged_df[i, ]) # Exclude annotation columns and the first Gene column
+    condition <- sample_info$condition
+    
+    # Perform t-test
+    t_test <- t.test(gene_expression ~ condition)
+    t_test_results$p_value[i] <- t_test$p.value
+    
+    # Calculate log2 fold change
+    mean_control <- mean(gene_expression[condition == time_point_1])
+    mean_treatment <- mean(gene_expression[condition == time_point_2])
+    t_test_results$log2FoldChange[i] <- log2(mean_treatment / mean_control)
+  }
+  
+  # Adjust p-values for multiple testing
+  t_test_results$p_adj <- p.adjust(t_test_results$p_value, method = "fdr")
+  
+  return(t_test_results)
+}
+
+genes_of_interest <- c("your genes here")
+
+#to use it
+object <- T_test_timepoints("timepoint baseline (like CF_Sham)", "timepoint comparison (like SF_Sham or CF_7dpa)", genes_of_interest)
+```
+
+
+```{r box plot counts}
+#Box Plots Function
+plot_counts <- function (dds, gene, normalization = "DESeq2"){
+  # read in the annotation file
+  annotation <- annotations_df
+  # obtain normalized data
+  if (normalization == "cpm") {
+    normalized_data <- cpm(counts(dds, normalized = F)) # normalize the raw data by counts per million
+  } else if (normalization == "DESeq2")
+    normalized_data <- counts(dds, normalized = T) # use DESeq2 normalized counts
+  # get sample groups from colData
+  condition <- dds@colData$condition
+  # get the gene name from the ensembl id
+  if (is.numeric(gene)) { # check if an index is supplied or if ensembl_id is supplied
+    if (gene%%1==0 )
+      ensembl_id <- rownames(normalized_data)[gene]
+    else
+      stop("Invalid index supplied.")
+  } else if (gene %in% annotation$gene_name){ # check if a gene name is supplied
+    ensembl_id <- annotation$gene_id[which(annotation$gene_name == gene)]
+  } else if (gene %in% annotation$gene_id){
+    ensembl_id <- gene
+  } else {
+    stop("Gene not found. Check spelling.")
+  }
+  expression <- normalized_data[ensembl_id,]
+  gene_name <- annotation$gene_name[which(annotation$gene_id == ensembl_id)]
+  # construct a tibble with the grouping and expression
+  gene_tib <- tibble(condition = condition, expression = expression)
+  ggplot(gene_tib, aes(x = condition, y = expression))+
+    geom_boxplot(outlier.size = NULL)+
+    geom_point()+
+    labs (title = paste0("Expression of ", gene_name, " - ", ensembl_id), x = "group", y = paste0("Normalized expression (", normalization , ")"))+
+    theme(axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 11))
+}
+
+#To make a plot
+plot_counts(dds, "gene of interest")
+
+```
+
+```{r Averaged Counts (necessary for the scatter plots)}
+dge <- DGEList(counts = count_data, group = group)
+
+# Apply normalization (e.g., TMM normalization)
+dge <- calcNormFactors(dge)
+
+# Get normalized counts (counts per million)
+norm_counts <- cpm(dge, log = FALSE)  # Use log = TRUE for log2 CPM
+
+
+boxplot(norm_counts, las = 2, main = "Normalized Counts Distribution")
+
+conditions <- c(
+  "CF_Sham", "CF_Sham", "CF_Sham",
+  "CF_3dpa", "CF_3dpa", "CF_3dpa",
+  "CF_7dpa", "CF_7dpa", "CF_7dpa",
+  "CF_14dpa", "CF_14dpa", "CF_14dpa",
+  "SF_Sham", "SF_Sham", "SF_Sham",
+  "SF_3dpa", "SF_3dpa", "SF_3dpa",
+  "SF_7dpa", "SF_7dpa", "SF_7dpa",
+  "SF_14dpa", "SF_14dpa", "SF_14dpa"
+)
+
+# Ensure column names and conditions match
+if (ncol(norm_counts) != length(conditions)) {
+  stop("Number of columns in norm_counts does not match length of conditions")
+}
+
+# Assign conditions to column names
+colnames(norm_counts) <- conditions
+
+# Average replicates by condition
+average_replicates <- function(count_matrix) {
+  # Create a new matrix to store averaged results
+  unique_conditions <- unique(colnames(count_matrix))
+  averaged_matrix <- matrix(NA, nrow = nrow(count_matrix), ncol = length(unique_conditions))
+  rownames(averaged_matrix) <- rownames(count_matrix)
+  colnames(averaged_matrix) <- unique_conditions
+  
+  # Average replicates
+  for (condition in unique_conditions) {
+    condition_cols <- which(colnames(count_matrix) == condition)
+    averaged_matrix[, condition] <- rowMeans(count_matrix[, condition_cols])
+  }
+  
+  return(averaged_matrix)
+}
+
+# Get the averaged counts
+averaged_counts <- average_replicates(norm_counts)
+
+# Print the averaged counts
+print(head(averaged_counts))
+
+averaged_counts <- cbind(averaged_counts, rownames(averaged_counts))
+averaged_counts <- as.data.frame(averaged_counts)
+averaged_counts <- averaged_counts %>% rename(gene_id = V9)
+averaged_counts <- merge(averaged_counts, annotations_df, by = "gene_id")
+```
+
+```{r Scatter plot for one gene (one morph too)}
+averaged_counts_CF <- averaged_counts %>% select(-SF_Sham, -SF_3dpa, -SF_7dpa, -SF_14dpa)
+#or for SF:
+averaged_counts_SF <- averaged_counts %>% select(-CF_Sham, -CF_3dpa, -CF_7dpa, -CF_14dpa)
+
+# Specify the gene of interest
+gene_of_interest <- "gene of interest"
+
+# Extract expression values for the gene of interest
+
+expression_values <- averaged_counts %>% filter(gene_name == gene_of_interest)
+
+
+expression_values <- expression_values %>% select(-gene_name, -gene_id)
+
+# Conditions
+conditions <- colnames(expression_values)
+
+
+expression_values <- as.numeric(expression_values[1, ])
+
+# Print the final expression values
+print(expression_values)
+
+
+# specify control (reference) condition (CF/SF)
+control_condition <- "CF_Sham"
+
+# Find the index of the control condition
+control_index <- which(conditions == control_condition)
+
+# Calculate fold change relative to the control condition
+fold_change <- expression_values / expression_values[control_index]
+
+# Create a data frame for plotting
+plot_data <- data.frame(
+  Condition = conditions,
+  FoldChange = fold_change,
+  TimePoint = factor(c("Sham", "3dpa", "7dpa", "14dpa"), levels = c("Sham", "3dpa", "7dpa", "14dpa"))
+)
+
+# Check plot_data
+print(plot_data)
+
+ggplot(plot_data, aes(x = TimePoint, y = FoldChange)) +
+  geom_point() +
+  geom_line(aes(group = 1)) +  # To connect the points
+  labs(title = paste("Expression of", gene_of_interest),
+       x = "Time Point",
+       y = "Fold Change (relative to Sham/0dpa)") +
+  theme_minimal()
+```
+
+```{r Log2FoldChange Scatterplot for multiple genes, one morph}
+genes_of_interest <- c("gene1", "gene2", "gene3") #maxes out at 6 genes
+
+# Initialize an empty list to store plot data
+plot_data_list <- list()
+
+# Process each gene of interest
+for (gene_of_interest in genes_of_interest) {
+  # Extract expression values for the gene of interest
+  expression_values <- averaged_counts_CF %>% filter(gene_name == gene_of_interest)
+  
+  # Check if the gene is found
+  if (nrow(expression_values) == 0) {
+    warning(paste("Gene", gene_of_interest, "not found in the data"))
+    next
+  }
+  
+  # Remove the gene_name column
+  expression_values <- expression_values %>% select(-gene_name, -gene_id)
+  
+  conditions <- colnames(expression_values)
+  
+  
+  # Convert to numeric vector
+  expression_values <- as.numeric(expression_values[1, ])
+  
+  
+  
+  # Assume Sham/0dpa is the control (reference) condition
+  control_condition <- "CF_Sham"
+  
+  # Find the index of the control condition
+  control_index <- which(conditions == control_condition)
+  
+  # Calculate fold change relative to the control condition
+  fold_change <- expression_values / expression_values[control_index]
+  
+  # Create a data frame for the gene
+  gene_plot_data <- data.frame(
+    Condition = conditions,
+    FoldChange = fold_change,
+    TimePoint = factor(c("Sham", "3dpa", "7dpa", "14dpa"), levels = c("Sham", "3dpa", "7dpa", "14dpa")),
+    Gene = gene_of_interest
+  )
+  
+  # Append to the list
+  plot_data_list[[gene_of_interest]] <- gene_plot_data
+}
+
+# Combine all plot data into one data frame
+combined_plot_data <- bind_rows(plot_data_list)
+
+# Create scatter plot for all genes
+ggplot(combined_plot_data, aes(x = TimePoint, y = FoldChange, color = Gene, shape = Gene)) +
+  geom_point(size = 3) +
+  geom_line(aes(group = Gene)) +  # To connect the points for each gene
+  labs(title = "Expression of Genes Relative to CF Sham",
+       x = "Time Point",
+       y = "Fold Change (relative to Sham)") +
+  theme_minimal() +
+  scale_color_manual(values = RColorBrewer::brewer.pal(length(genes_of_interest), "Set1"))  # Use a color palette
+```
+
+```{r Log2FoldChange scatterplot with both CF and SF (each relative to their own sham)}
+
+#SF + CF Plots (each relative to their own shams)
+
+
+Fold_Change_ScatterPlot <- function(genes_of_interest) {
+  
+averaged_counts_CF <- averaged_counts %>% select(gene_name, CF_Sham, CF_3dpa, CF_7dpa, CF_14dpa, gene_id)
+averaged_counts_SF <- averaged_counts %>% select(gene_name, SF_Sham, SF_3dpa, SF_7dpa, SF_14dpa, gene_id)
+
+
+# Initialize empty lists to store plot data
+plot_data_CF <- list()
+plot_data_SF <- list()
+
+# Process CF conditions
+for (gene_of_interest in genes_of_interest) {
+  expression_values <- averaged_counts_CF %>% filter(gene_name == gene_of_interest)
+  expression_values <- expression_values %>% select(-gene_name, -gene_id)
+  conditions <- colnames(expression_values)
+  expression_values <- as.numeric(expression_values[1, ])
+  control_condition <- "CF_Sham"
+  control_index <- which(conditions == control_condition)
+  fold_change <- expression_values / expression_values[control_index]
+  gene_plot_data <- data.frame(
+    Condition = conditions,
+    FoldChange = fold_change,
+    TimePoint = factor(c("Sham", "3dpa", "7dpa", "14dpa"), levels = c("Sham", "3dpa", "7dpa", "14dpa")),
+    Gene = gene_of_interest,
+    Type = "CF"
+  )
+  plot_data_CF <- append(plot_data_CF, list(gene_plot_data))
+}
+
+# Process SF conditions
+for (gene_of_interest in genes_of_interest) {
+  expression_values <- averaged_counts_SF %>% filter(gene_name == gene_of_interest)
+  expression_values <- expression_values %>% select(-gene_name, -gene_id)
+  conditions <- colnames(expression_values)
+  expression_values <- as.numeric(expression_values[1, ])
+  control_condition <- "SF_Sham"
+  control_index <- which(conditions == control_condition)
+  fold_change <- expression_values / expression_values[control_index]
+  gene_plot_data <- data.frame(
+    Condition = conditions,
+    FoldChange = fold_change,
+    TimePoint = factor(c("Sham", "3dpa", "7dpa", "14dpa"), levels = c("Sham", "3dpa", "7dpa", "14dpa")),
+    Gene = gene_of_interest,
+    Type = "SF"
+  )
+ plot_data_SF <- append(plot_data_SF, list(gene_plot_data))
+}
+
+# Combine CF and SF plot data
+combined_plot_data_CF <- do.call(rbind, plot_data_CF)
+combined_plot_data_SF <- do.call(rbind, plot_data_SF)
+combined_plot_data <- rbind(combined_plot_data_CF, combined_plot_data_SF)
+
+# Print the combined data to check the structure
+print(head(combined_plot_data))
+
+# Create gradient color palettes for CF and SF
+cf_colors <- colorRampPalette(c("lightblue", "blue"))(length(unique(combined_plot_data$Gene[combined_plot_data$Type == "CF"])))
+sf_colors <- colorRampPalette(c("lightpink", "red"))(length(unique(combined_plot_data$Gene[combined_plot_data$Type == "SF"])))
+
+# Create a named vector for the gradient colors
+cf_palette <- colorRampPalette(c("lightblue", "blue"))(length(genes_of_interest))
+sf_palette <- colorRampPalette(c("lightpink", "red"))(length(genes_of_interest))
+
+# Create a named vector for the colors
+color_vector <- c(setNames(cf_palette, paste0(genes_of_interest, "_CF")),
+                  setNames(sf_palette, paste0(genes_of_interest, "_SF")))
+
+# Add a new column to differentiate gene and type combination
+combined_plot_data$GeneType <- paste(combined_plot_data$Gene, combined_plot_data$Type, sep = "_")
+
+# Create the plot
+ggplot(combined_plot_data, aes(x = TimePoint, y = FoldChange, color = GeneType, shape = Type)) +
+  geom_point(size = 3) +
+  geom_line(aes(group = interaction(Gene, Type))) +  # Connect points for each gene and type
+  labs(title = "Expression of Genes Relative to Sham/0dpa",
+       x = "Time Point",
+       y = "Fold Change (relative to Sham/0dpa)") +
+  theme_minimal() +
+  scale_color_manual(values = color_vector)
+}
+
+#to use the function
+
+#define your genes of interest
+genes_of_interest <- c("")
+
+Fold_Change_ScatterPlot(genes_of_interest)
+
+```
+
+```{r FPKM Values}
+#Getting FPKM values
+
+count_data_lengths <- merge(averaged_counts, gene_lengths_annotations, by = "gene_id")
+
+# Remove unwanted columns and ensure proper data types
+row.names(count_data_lengths) <- count_data_lengths$gene_id
+count_data_lengths <- count_data_lengths %>% select(-gene_id, -gene_name.x, -gene_name.y)
+
+count_data_lengths <- count_data_lengths %>%
+  mutate(across(everything(), as.numeric))
+
+# Separate counts and lengths
+counts <- count_data_lengths %>% select(starts_with("CF_"), starts_with("SF_"))
+lengths <- count_data_lengths$length
+
+calculate_fpkm <- function(counts, lengths) {
+  # Total mapped reads per sample
+  total_mapped_reads <- colSums(counts)
+  
+  # Convert lengths to kilobases
+  lengths_kb <- lengths / 1000
+  
+  # Calculate FPKM
+  fpkm <- t(t(counts) / total_mapped_reads) / lengths_kb * 1e6
+  return(fpkm)
+}
+
+# Calculate FPKM
+fpkm <- calculate_fpkm(counts, lengths)
+
+# Print FPKM
+print(fpkm)
+
+
+
+# Add gene_id and gene_name back to fpkm data frame
+fpkm_data <- data.frame(gene_id = averaged_counts$gene_id, gene_name = averaged_counts$gene_name, fpkm)
+
+
+sample_info <- data.frame(
+  Sample = colnames(fpkm),
+  condition = c("CF_Sham", "CF_3dpa", "CF_7dpa", "CF_14dpa",
+"SF_Sham",
+ "SF_3dpa",
+"SF_7dpa", "SF_14dpa")
+)
+
+
+# Transpose FPKM data for easier manipulation
+fpkm_long <- fpkm_data %>%
+  pivot_longer(cols = starts_with("CF_") | starts_with("SF_"), 
+               names_to = "Sample", 
+               values_to = "FPKM")
+
+# Check the long-format FPKM data
+print(head(fpkm_long))
+
+fpkm_t <- fpkm_data %>%
+  pivot_longer(cols = starts_with("CF_") | starts_with("SF_"), 
+               names_to = "Sample", 
+               values_to = "FPKM") %>%
+  pivot_wider(names_from = Sample, values_from = FPKM)
+
+fpkm_long <- merge(fpkm_long, sample_info, by = "Sample")
+
+fpkm_long <- fpkm_t %>%
+ pivot_longer(-c(gene_id, gene_name), names_to = "Sample", values_to = "FPKM") %>%
+  left_join(sample_info, by = "Sample")
+
+
+
+
+
+add_timepoint <- function(condition) {
+  ifelse(grepl("Sham", condition), "Sham",
+         ifelse(grepl("3dpa", condition), "3dpa",
+                ifelse(grepl("7dpa", condition), "7dpa", "14dpa")))
+}
+
+# Add the time point column
+averaged_fpkm <- fpkm_long %>%
+  mutate(TimePoint = factor(add_timepoint(condition), levels = c("Sham", "3dpa", "7dpa", "14dpa")))
+```
+
+```{r FPKM Plot}
+#the function
+FPKM_Plot <- function(genes_of_interest) {
+averaged_fpkm_CF <- averaged_fpkm %>% filter(condition %in% c("CF_Sham", "CF_3dpa", "CF_7dpa", "CF_14dpa"))
+averaged_fpkm_SF <- averaged_fpkm %>% filter(condition %in% c("SF_Sham", "SF_3dpa", "SF_7dpa", "SF_14dpa"))
+
+
+# Initialize empty lists to store plot data
+plot_data_CF <- list()
+plot_data_SF <- list()
+
+# Process CF conditions
+for (gene_of_interest in genes_of_interest) {
+  expression_values <- averaged_fpkm_CF %>% filter(gene_name == gene_of_interest)
+  expression_values <- expression_values %>% select(-gene_name)
+  conditions <- c("CF_Sham", "CF_3dpa", "CF_7dpa", "CF_14dpa")
+  FPKM <- as.numeric(expression_values$FPKM)
+  control_condition <- "CF_Sham"
+  gene_plot_data <- data.frame(
+    Condition = conditions,
+    FPKM = FPKM,
+    TimePoint = TimePoint, levels = c("Sham", "3dpa", "7dpa", "14dpa"),
+    Gene = gene_of_interest,
+    Type = "CF"
+  )
+  plot_data_CF <- append(plot_data_CF, list(gene_plot_data))
+}
+
+# Process SF conditions
+for (gene_of_interest in genes_of_interest) {
+  expression_values <- averaged_fpkm_SF %>% filter(gene_name == gene_of_interest)
+  expression_values <- expression_values %>% select(-gene_name)
+  conditions <- c("SF_Sham", "SF_3dpa", "SF_7dpa", "SF_14dpa")
+  FPKM <- as.numeric(expression_values$FPKM)
+  gene_plot_data <- data.frame(
+    Condition = conditions,
+    FPKM = FPKM,
+    TimePoint = TimePoint, levels = c("Sham", "3dpa", "7dpa", "14dpa"),
+    Gene = gene_of_interest,
+    Type = "SF"
+  )
+ plot_data_SF <- append(plot_data_SF, list(gene_plot_data))
+}
+
+# Combine CF and SF plot data
+combined_plot_data_CF <- do.call(rbind, plot_data_CF)
+combined_plot_data_SF <- do.call(rbind, plot_data_SF)
+combined_plot_data <- rbind(combined_plot_data_CF, combined_plot_data_SF)
+
+# Print the combined data to check the structure
+print(head(combined_plot_data))
+
+# Create gradient color palettes for CF and SF
+cf_colors <- colorRampPalette(c("lightblue", "blue"))(length(unique(combined_plot_data$Gene[combined_plot_data$Type == "CF"])))
+sf_colors <- colorRampPalette(c("lightpink", "red"))(length(unique(combined_plot_data$Gene[combined_plot_data$Type == "SF"])))
+
+# Create a named vector for the gradient colors
+cf_palette <- colorRampPalette(c("lightblue", "blue"))(length(genes_of_interest))
+sf_palette <- colorRampPalette(c("lightpink", "red"))(length(genes_of_interest))
+
+# Create a named vector for the colors
+color_vector <- c(setNames(cf_palette, paste0(genes_of_interest, "_CF")),
+                  setNames(sf_palette, paste0(genes_of_interest, "_SF")))
+
+# Add a new column to differentiate gene and type combination
+combined_plot_data$GeneType <- paste(combined_plot_data$Gene, combined_plot_data$Type, sep = "_")
+
+# Create the plot
+ggplot(combined_plot_data, aes(x = TimePoint, y = FPKM, color = GeneType, shape = Type)) +
+  geom_point(size = 3) +
+  geom_line(aes(group = interaction(Gene, Type))) +  # Connect points for each gene and type
+  labs(title = "Expression of Genes Relative to Sham/0dpa",
+       x = "Time Point",
+       y = "FPKM") +
+  theme_minimal() +
+  scale_color_manual(values = color_vector)
+}
+
+#to use
+
+#define your genes of interest
+genes_of_interest <- c("")
+
+FPKM_Plot(genes_of_interest)
+```
+
+
+```{r volcano plot (not perfected yet but it is close so if you need one, you can tinker with this)}
+plot_volcano <- function (res, padj_cutoff, nlabel = 10, label.by = "padj"){
+  # assign significance to results based on padj
+  res <- mutate(res, significance=ifelse(res$padj<padj_cutoff, paste0("padj < ", padj_cutoff), paste0("padj > ", padj_cutoff)))
+  res = res[!is.na(res$significance),]
+  significant_genes <- res %>% filter(significance == paste0("padj < ", padj_cutoff))
+  
+  # get labels for the highest or lowest genes according to either padj or log2FoldChange
+  if (label.by == "padj") {
+    top_genes <- significant_genes %>% arrange(padj) %>% head(nlabel)
+    bottom_genes <- significant_genes %>% filter (log2FoldChange < 0) %>% arrange(padj) %>% head (nlabel)
+  } else if (label.by == "log2FoldChange") {
+    top_genes <- head(arrange(significant_genes, desc(log2FoldChange)),nlabel)
+    bottom_genes <- head(arrange(significant_genes, log2FoldChange),nlabel)
+  } else
+    stop ("Invalid label.by argument. Choose either padj or log2FoldChange.")
+  
+  ggplot(res, aes(log2FoldChange, -log(padj))) +
+    geom_point(aes(col=significance)) + 
+    scale_color_manual(values=c("red", "black")) + 
+    ggrepel::geom_text_repel(data=top_genes, aes(label=head(gene_name,nlabel)), size = 3)+
+    ggrepel::geom_text_repel(data=bottom_genes, aes(label=head(gene_name,nlabel)), color = "#619CFF", size = 3)+
+    labs ( x = "Log2FoldChange", y = "-(Log normalized p-value)")+
+    geom_vline(xintercept = 0, linetype = "dotted")+
+    theme_minimal()
+}
+
+plot_volcano(sample_res, 0.0005, nlabel = 15, label.by = "padj")
+```
+
